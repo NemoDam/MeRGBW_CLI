@@ -807,6 +807,10 @@ async def main() -> None:
 
     cmd_str = sys.argv[1].lower()
 
+    if cmd_str in ("h", "help"):
+        print(HELP)
+        return
+
     if cmd_str == "scan":
         await scan()
         return
