@@ -71,7 +71,7 @@ python ble_led.py scene "flowing water"
 python ble_led.py scene "chase" 80
 python ble_led.py scene id 23
 python ble_led.py scenes
-python ble_led.py scenes corsa
+python ble_led.py scenes "run with dot"
 ```
 
 ### Light scenes
@@ -95,22 +95,23 @@ light-to-dark transitions, flowing water, flow, run, and run-with-dot
 variants. 
 See `scenes.py` for the full list with scene IDs.
 
-Gruppi principali:
+Main groups:
 
-| Category                | ID range					      |
-|-------------------------|-------------------------|
-| Cycle / multi-color     | 1-10                    |
-| Alternating gradient    | 11-15                   |
-| Accumulation            | 16-22                   |
-| Chase				            | 23-25                   |
-| Drift / Spread		      | 26-31                   |
-| Melody close     				| 32-34                   |
-| Opening and closing     | 35-44                   |
-| transition              | 45-54                   |
-| Flowing water           | 55-63                   |
-| Flow	                  | 64-75                   |
-| Run	                    | 84-95                   |
-| Run with dot	          | 96-117                  |
+| Category                | ID range |
+|-------------------------|----------|
+| Cycle / multi-color     | 1-10     |
+| Alternating gradient    | 11-15    |
+| Accumulation            | 16-22    |
+| Chase				            | 23-25    |
+| Drift							      | 26-28    |
+| Spread						      | 29-31    |
+| Melody close     				| 32-34    |
+| Opening and closing     | 35-44    |
+| transition              | 45-54    |
+| Flowing water           | 55-63    |
+| Flow	                  | 64-75    |
+| Run	                    | 84-95    |
+| Run with dot	          | 96-117   |
 
 ### Music scenes (microphone mode)
 
@@ -214,7 +215,7 @@ Main CMD commands:
 - [bleak](https://github.com/hbldh/bleak) — BLE Python cross-platform library
 - [VerTox/rgw_hex_bt](https://github.com/VerTox/rgw_hex_bt) 
 - App: **MeRGBw** by Kangtaixin Neon LED (Android)
-- [Smart LED Neon Light](https://www.amazon.it/MeRGBW-Home-Striscia-Controllo-Intelligente-Cambiamento/dp/B0D91TQ3D7) - Amazon link
+- [Smart LED Neon Light](https://www.amazon.it/MeRGBW-Home-Striscia-Controllo-Intelligente-Cambiamento/dp/B0D91TQ3D7) - link to the product on Amazon
 
 
 <img src="img/led_0.jpg" width="300"/>
