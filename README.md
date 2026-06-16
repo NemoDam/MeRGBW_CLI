@@ -17,7 +17,6 @@ source .venv/bin/activate
 pip install bleak
 ```
 
-
 Tested on Linux (BlueZ via D-Bus). The `is_bluetooth_enabled()` check
 uses `bluetoothctl show` and falls back to "enabled" if `bluetoothctl`
 is not available, so the actual connection attempt remains the final
@@ -89,10 +88,11 @@ python ble_led.py scenes [filter]
 - `scenes` with no argument lists all 109 scenes; with a text/number
   argument it filters by name substring or exact scene ID
 
-109 scenes are available, grouped by category: Cycle, gradients,
+109 scenes are available, grouped by category:  
+Cycle, gradients,
 accumulation, chase, drift, spread, melody close, opening/closing,
 light-to-dark transitions, flowing water, flow, run, and run-with-dot
-variants. 
+variants.  
 See `scenes.py` for the full list with scene IDs.
 
 Main groups:
@@ -124,6 +124,14 @@ python ble_led.py music
 6 scenes available: `Spectrum1`, `Spectrum2`, `Spectrum3`, `Flowing`,
 `Rolling`, `Rhythm` (IDs 1-6). These do not use a speed parameter.
 
+### Microphone sensitivity mapping
+| Value  | Percentage |
+| ------ | ---------- |
+| `0x3C` | 0%         |
+| `0x4C` | 40%        |
+| `0x5C` | 80%        |
+| `0x64` | 100%       |
+
 ### Schedule
 
 ```bash
@@ -136,8 +144,19 @@ python ble_led.py schedule clear
 ```
 
 `<days>` is a comma-separated list of `mon tue wed thu fri sat sun`,
-or `all`. 
+or `all`.  
 Examples: `all`, `mon,wed,fri`, `sat,sun`.
+
+### Weekday bitmask
+| Bit  | Day       |
+| ---- | --------- |
+| bit0 | Monday    |
+| bit1 | Tuesday   |
+| bit2 | Wednesday |
+| bit3 | Thursday  |
+| bit4 | Friday    |
+| bit5 | Saturday  |
+| bit6 | Sunday    |
 
 ## Using as a library
 
@@ -160,63 +179,71 @@ asyncio.run(main())
 
 The full BLE packet protocol (CMD bytes, payload structure, checksum,
 NOTIFY format) is documented in the module docstring at the top of
-`ble_led.py`. It was reverse-engineered from BLE HCI captures of the
-official MeRGBw app.
+`ble_led.py`.  
+It was reverse-engineered from BLE HCI captures of the official MeRGBw app.
 
-BLE LED device controller
-MAC: 41:42:81:AB:60:BB
-WRITE  -> FFF3 (handle 0x0009)
-NOTIFY <- FFF4 (handle 0x000b)
+| Campo       | Valore              |
+| ----------- | ------------------- |
+| Device      | BLE LED controller  |
+| MAC Address | `41:42:81:AB:60:BB` |
 
-### *FFF3 packet protocol (WRITE)*:
-<HEADER>  <CMD>  <SEQ>  <LEN_TOT>  [payload...]  <CHK>
+| Tipo            | UUID / Nome | Handle   |
+| --------------- | ----------- | -------- |
+| WRITE (comandi) | -> FFF3     | `0x0009` |
+| NOTIFY (stato)  | <- FFF4     | `0x000b` |
 
-  0x55  HEADER
-  0xFF  SEQ
+### **FFF3 packet protocol (WRITE)**:
+Packet structure:
+| Field   | Description                        |
+| ------- | ---------------------------------- |
+| HEADER  | Fixed start byte                   |
+| CMD     | Command identifier                 |
+| SEQ     | Sequence byte (`0xFF`)             |
+| LEN_TOT | Total packet length                |
+| PAYLOAD | Variable data depending on command |
+| CHK     | Checksum                           |
 
 Main CMD commands:
-  0x00  QUERY STATUS  (empty payload)
-  0x01  POWER ON/OFF  (payload: 0x01=on  0x00=off)
-  0x03  COLOR         (payload: HUE_HI HUE_LO BRI_HI BRI_LO)
-                       HUE  0-360 uint16 big-endian (0=red, 120=green, 240=blue)
-                       BRI  0-1000 uint16 big-endian
-  0x05  BRIGHTNESS    (payload: BRI_HI BRI_LO)
-                       BRI  0-1000 uint16 big-endian
-  0x08  MIC SENSITIVITY (payload: 0x3c-0x64 (60-100) - (0%-100%)
-  0x0A  SCHEDULE      (8-byte payload, see cmd_set_schedule)
-  0x0E  HANDSHAKE     (fixed token, sent once at startup)
+| CMD    | Name            | Payload                       | Description                |
+| ------ | --------------- | ----------------------------- | -------------------------- |
+| `0x00` | QUERY STATUS    | none                          | Request device status      |
+| `0x01` | POWER ON/OFF    | `0x01` = ON, `0x00` = OFF     | Toggle power state         |
+| `0x03` | COLOR           | `HUE_HI HUE_LO BRI_HI BRI_LO` | Set color and brightness   |
+| `0x05` | BRIGHTNESS      | `BRI_HI BRI_LO`               | Set brightness only        |
+| `0x08` | MIC SENSITIVITY | `0x3C–0x64` (60–100%)         | Set microphone sensitivity |
+| `0x0A` | SCHEDULE        | 8-byte payload                | Configure scheduling       |
+| `0x0E` | HANDSHAKE       | fixed token                   | Device initialization      |
 
-  <CHK> checksum:     sum (all packet bytes) = 0xFF
-
-### *FFF4 packet protocol (NOTIFY, 19 bytes)*:
-  [0]  0x56        fixed header
-  [1]  0x00        cmd echo
-  [2]  0xFF        fixed
-  [3]  0x14        length
-  [4]  pwr         0x00=off  0x01=on
-  [5]  lum_hi      brightness high byte
-  [6]  lum_lo      brightness low byte  (range 0x0032=50 min ... 0x03E8=1000 max)
-  [7]  on_sched    0x01=power-on schedule active  0x00=disabled
-  [8]  on_hh       scheduled power-on hour (dec)
-  [9]  on_mm       scheduled power-on minute (dec)
-  [10] on_days     power-on days bitmask (bit6=sun ... bit0=mon)  0x7F=all
-  [11] off_sched   0x01=power-off schedule active  0x00=disabled
-  [12] off_hh      scheduled power-off hour (dec)
-  [13] off_mm      scheduled power-off minute (dec)
-  [14] off_days    power-off days bitmask (bit6=sun ... bit0=mon)  0x7F=all
-  [15] 0x00        fixed
-  [16] n_led       number of LEDs in the strip (dec)
-  [17] mic_sens    mic sensitivity: 0x3C=0% 0x4C=40% 0x5C=80% 0x64=100%
-  [18] chk         checksum
-
+### **FFF4 packet protocol (NOTIFY, 19 bytes)**:
+| Index | Field     | Description                             |
+| ----- | --------- | --------------------------------------- |
+| 0     | HEADER    | `0x56`                                  |
+| 1     | CMD echo  | Returned command                        |
+| 2     | FIXED     | `0xFF`                                  |
+| 3     | LENGTH    | `0x14`                                  |
+| 4     | power     | `0x00` OFF / `0x01` ON                  |
+| 5     | lum_hi    | Brightness high byte                    |
+| 6     | lum_lo    | Brightness low byte                     |
+| 7     | on_sched  | Power-on schedule enabled               |
+| 8     | on_hh     | Power-on hour                           |
+| 9     | on_mm     | Power-on minute                         |
+| 10    | on_days   | Weekday bitmask (bit6=Sun ... bit0=Mon) |
+| 11    | off_sched | Power-off schedule enabled              |
+| 12    | off_hh    | Power-off hour                          |
+| 13    | off_mm    | Power-off minute                        |
+| 14    | off_days  | Weekday bitmask                         |
+| 15    | FIXED     | `0x00`                                  |
+| 16    | n_led     | Number of LEDs in strip                 |
+| 17    | mic_sens  | Microphone sensitivity                  |
+| 18    | chk       | Checksum                                |
 
 ## Reference
 
 - [bleak](https://github.com/hbldh/bleak) — BLE Python cross-platform library
-- [VerTox/rgw_hex_bt](https://github.com/VerTox/rgw_hex_bt) 
-- App: **MeRGBw** by Kangtaixin Neon LED (Android)
+- [VerTox/rgw_hex_bt](https://github.com/VerTox/rgw_hex_bt) - MeRGBW Hexagon BT is a custom integration for Home Assistant
+- [App: **MeRGBw**](https://play.google.com/store/apps/details?id=com.mergbw.android) - by Shenzhen Dingyun Future
+- [MeRGBW](https://linktr.ee/mergbw) - Linktr
 - [Smart LED Neon Light](https://www.amazon.it/MeRGBW-Home-Striscia-Controllo-Intelligente-Cambiamento/dp/B0D91TQ3D7) - link to the product on Amazon
-
 
 <img src="img/led_0.jpg" width="300"/>
 <img src="img/led_1.jpg" width="300"/>
