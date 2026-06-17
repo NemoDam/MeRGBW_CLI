@@ -8,6 +8,7 @@ BLE library.
 
 - `ble_led.py` - main script: BLE protocol, controller class, CLI
 - `scenes.py` - catalog of 109 light scenes and 6 music (mic) scenes
+- `TG201A_protocol.md` - 
 
 ## Requirements
 
@@ -124,7 +125,7 @@ python ble_led.py music
 6 scenes available: `Spectrum1`, `Spectrum2`, `Spectrum3`, `Flowing`,
 `Rolling`, `Rhythm` (IDs 1-6). These do not use a speed parameter.
 
-### Microphone sensitivity mapping
+### Microphone sensitivity mapping in remote control
 | Value  | Percentage |
 | ------ | ---------- |
 | `0x3C` | 0%         |
@@ -136,27 +137,18 @@ python ble_led.py music
 
 ```bash
 python ble_led.py schedule on  <HH:MM> <days>
-python ble_led.py schedule on  enable|disable
 python ble_led.py schedule off <HH:MM> <days>
+python ble_led.py schedule on  enable|disable
 python ble_led.py schedule off enable|disable
 python ble_led.py schedule both <ON_HH:MM> <OFF_HH:MM> <days>
 python ble_led.py schedule clear
+python ble_led.py schedule on <HH:MM> tue,wed,fri,sun
+python ble_led.py schedule off <HH:MM> tue,fri,sat
+python ble_led.py schedule on <HH:MM> all
 ```
 
-`<days>` is a comma-separated list of `mon tue wed thu fri sat sun`,
-or `all`.  
+`<days>` is a comma-separated list of `mon tue wed thu fri sat sun`, or `all`.  
 Examples: `all`, `mon,wed,fri`, `sat,sun`.
-
-### Weekday bitmask
-| Bit  | Day       |
-| ---- | --------- |
-| bit0 | Monday    |
-| bit1 | Tuesday   |
-| bit2 | Wednesday |
-| bit3 | Thursday  |
-| bit4 | Friday    |
-| bit5 | Saturday  |
-| bit6 | Sunday    |
 
 ## Using as a library
 
@@ -174,68 +166,6 @@ async def main():
 
 asyncio.run(main())
 ```
-
-## Protocol notes
-
-The full BLE packet protocol (CMD bytes, payload structure, checksum,
-NOTIFY format) is documented in the module docstring at the top of
-`ble_led.py`.  
-It was reverse-engineered from BLE HCI captures of the official MeRGBw app.
-
-| Campo       | Valore              |
-| ----------- | ------------------- |
-| Device      | BLE LED controller  |
-| MAC Address | `41:42:81:AB:60:BB` |
-
-| Tipo            | UUID / Nome | Handle   |
-| --------------- | ----------- | -------- |
-| WRITE (comandi) | -> FFF3     | `0x0009` |
-| NOTIFY (stato)  | <- FFF4     | `0x000b` |
-
-### **FFF3 packet protocol (WRITE)**:
-Packet structure:
-| Field   | Description                        |
-| ------- | ---------------------------------- |
-| HEADER  | Fixed start byte                   |
-| CMD     | Command identifier                 |
-| SEQ     | Sequence byte (`0xFF`)             |
-| LEN_TOT | Total packet length                |
-| PAYLOAD | Variable data depending on command |
-| CHK     | Checksum                           |
-
-Main CMD commands:
-| CMD    | Name            | Payload                       | Description                |
-| ------ | --------------- | ----------------------------- | -------------------------- |
-| `0x00` | QUERY STATUS    | none                          | Request device status      |
-| `0x01` | POWER ON/OFF    | `0x01` = ON, `0x00` = OFF     | Toggle power state         |
-| `0x03` | COLOR           | `HUE_HI HUE_LO BRI_HI BRI_LO` | Set color and brightness   |
-| `0x05` | BRIGHTNESS      | `BRI_HI BRI_LO`               | Set brightness only        |
-| `0x08` | MIC SENSITIVITY | `0x3C–0x64` (60–100%)         | Set microphone sensitivity |
-| `0x0A` | SCHEDULE        | 8-byte payload                | Configure scheduling       |
-| `0x0E` | HANDSHAKE       | fixed token                   | Device initialization      |
-
-### **FFF4 packet protocol (NOTIFY, 19 bytes)**:
-| Index | Field     | Description                             |
-| ----- | --------- | --------------------------------------- |
-| 0     | HEADER    | `0x56`                                  |
-| 1     | CMD echo  | Returned command                        |
-| 2     | FIXED     | `0xFF`                                  |
-| 3     | LENGTH    | `0x14`                                  |
-| 4     | power     | `0x00` OFF / `0x01` ON                  |
-| 5     | lum_hi    | Brightness high byte                    |
-| 6     | lum_lo    | Brightness low byte                     |
-| 7     | on_sched  | Power-on schedule enabled               |
-| 8     | on_hh     | Power-on hour                           |
-| 9     | on_mm     | Power-on minute                         |
-| 10    | on_days   | Weekday bitmask (bit6=Sun ... bit0=Mon) |
-| 11    | off_sched | Power-off schedule enabled              |
-| 12    | off_hh    | Power-off hour                          |
-| 13    | off_mm    | Power-off minute                        |
-| 14    | off_days  | Weekday bitmask                         |
-| 15    | FIXED     | `0x00`                                  |
-| 16    | n_led     | Number of LEDs in strip                 |
-| 17    | mic_sens  | Microphone sensitivity                  |
-| 18    | chk       | Checksum                                |
 
 ## Reference
 
