@@ -925,9 +925,19 @@ async def main() -> None:
         elif cmd_str == "schedule":
             # -- Parsing helpers ---------------------------------------------
             def parse_time(s: str):
-                """'19:30' -> (19, 30)"""
-                hh, mm = s.split(":")
-                return int(hh), int(mm)
+                """'HH:MM' -> (hh, mm)  with range check [00..23] and [00..59]."""
+                parts = s.split(":")
+                if len(parts) != 2:
+                    raise ValueError(f"Invalid time format {s!r}: expected HH:MM")
+                try:
+                    hh, mm = int(parts[0]), int(parts[1])
+                except ValueError:
+                    raise ValueError(f"Invalid time {s!r}: hours and minutes must be integers")
+                if not (0 <= hh <= 23):
+                    raise ValueError(f"Invalid hour {hh}: must be in range 0-23")
+                if not (0 <= mm <= 59):
+                    raise ValueError(f"Invalid minute {mm}: must be in range 0-59")
+                return hh, mm
 
             def parse_days(s: str) -> int:
                 """'mon,wed,fri' or 'all' -> bitmask"""
@@ -957,73 +967,77 @@ async def main() -> None:
             cur_on_days  = 0x7F
             cur_off_days = 0x7F
 
-            if sub == "on":
-                third = sys.argv[3].lower() if len(sys.argv) > 3 else ""
-                if third in ("enable", "disable"):
-                    # Change only the flag; on time and days unchanged
+            try:
+                if sub == "on":
+                    third = sys.argv[3].lower() if len(sys.argv) > 3 else ""
+                    if third in ("enable", "disable"):
+                        # Change only the flag; on time and days unchanged
+                        await led.set_schedule(
+                            (third == "enable"), cur_on_hh,  cur_on_mm,  cur_on_days,
+                            cur_off_active,      cur_off_hh, cur_off_mm, cur_off_days,
+                        )
+                    elif len(sys.argv) < 5:
+                        print("Usage: schedule on <HH:MM> <days>")
+                        print("     e.g.: schedule on 19:00 all")
+                        print("     or: schedule on enable|disable")
+                    else:
+                        # New power-on time, enable; off side unchanged
+                        on_hh, on_mm = parse_time(sys.argv[3])
+                        on_days      = parse_days(sys.argv[4])
+                        await led.set_schedule(
+                            True,          on_hh,       on_mm,       on_days,
+                            cur_off_active, cur_off_hh, cur_off_mm, cur_off_days,
+                        )
+
+                elif sub == "off":
+                    third = sys.argv[3].lower() if len(sys.argv) > 3 else ""
+                    if third in ("enable", "disable"):
+                        # Change only the flag; off time and days unchanged
+                        await led.set_schedule(
+                            cur_on_active,      cur_on_hh,  cur_on_mm,  cur_on_days,
+                            (third == "enable"), cur_off_hh, cur_off_mm, cur_off_days,
+                        )
+                    elif len(sys.argv) < 5:
+                        print("Usage: schedule off <HH:MM> <days>")
+                        print("     e.g.: schedule off 23:30 mon,tue,wed,thu,fri")
+                        print("     or: schedule off enable|disable")
+                    else:
+                        # New power-off time, enable; on side unchanged
+                        off_hh, off_mm = parse_time(sys.argv[3])
+                        off_days       = parse_days(sys.argv[4])
+                        await led.set_schedule(
+                            cur_on_active, cur_on_hh, cur_on_mm, cur_on_days,
+                            True,          off_hh,    off_mm,    off_days,
+                        )
+
+                elif sub == "both":
+                    # schedule both HH:MM HH:MM days  -> set both and enable
+                    if len(sys.argv) < 6:
+                        print("Usage: schedule both <ON_HH:MM> <OFF_HH:MM> <days>")
+                        print("     e.g.: schedule both 08:00 22:00 sat,sun")
+                    else:
+                        on_hh,  on_mm  = parse_time(sys.argv[3])
+                        off_hh, off_mm = parse_time(sys.argv[4])
+                        days           = parse_days(sys.argv[5])
+                        await led.set_schedule(
+                            True, on_hh,  on_mm,  days,
+                            True, off_hh, off_mm, days,
+                        )
+
+                elif sub == "clear":
+                    # Disable both flags; times and days unchanged
                     await led.set_schedule(
-                        (third == "enable"), cur_on_hh,  cur_on_mm,  cur_on_days,
-                        cur_off_active,      cur_off_hh, cur_off_mm, cur_off_days,
+                        False, cur_on_hh,  cur_on_mm,  cur_on_days,
+                        False, cur_off_hh, cur_off_mm, cur_off_days,
                     )
-                elif len(sys.argv) < 5:
-                    print("Usage: schedule on <HH:MM> <days>")
-                    print("     e.g.: schedule on 19:00 all")
-                    print("     or: schedule on enable|disable")
+                    log.info("Schedules disabled.")
+
                 else:
-                    # New power-on time, enable; off side unchanged
-                    on_hh, on_mm = parse_time(sys.argv[3])
-                    on_days      = parse_days(sys.argv[4])
-                    await led.set_schedule(
-                        True,          on_hh,       on_mm,       on_days,
-                        cur_off_active, cur_off_hh, cur_off_mm, cur_off_days,
-                    )
+                    print(f"Unrecognized schedule sub-command: {sub!r}")
+                    print("Valid: on  off  both  clear")
 
-            elif sub == "off":
-                third = sys.argv[3].lower() if len(sys.argv) > 3 else ""
-                if third in ("enable", "disable"):
-                    # Change only the flag; off time and days unchanged
-                    await led.set_schedule(
-                        cur_on_active,      cur_on_hh,  cur_on_mm,  cur_on_days,
-                        (third == "enable"), cur_off_hh, cur_off_mm, cur_off_days,
-                    )
-                elif len(sys.argv) < 5:
-                    print("Usage: schedule off <HH:MM> <days>")
-                    print("     e.g.: schedule off 23:30 mon,tue,wed,thu,fri")
-                    print("     or: schedule off enable|disable")
-                else:
-                    # New power-off time, enable; on side unchanged
-                    off_hh, off_mm = parse_time(sys.argv[3])
-                    off_days       = parse_days(sys.argv[4])
-                    await led.set_schedule(
-                        cur_on_active, cur_on_hh, cur_on_mm, cur_on_days,
-                        True,          off_hh,    off_mm,    off_days,
-                    )
-
-            elif sub == "both":
-                # schedule both HH:MM HH:MM days  -> set both and enable
-                if len(sys.argv) < 6:
-                    print("Usage: schedule both <ON_HH:MM> <OFF_HH:MM> <days>")
-                    print("     e.g.: schedule both 08:00 22:00 sat,sun")
-                else:
-                    on_hh,  on_mm  = parse_time(sys.argv[3])
-                    off_hh, off_mm = parse_time(sys.argv[4])
-                    days           = parse_days(sys.argv[5])
-                    await led.set_schedule(
-                        True, on_hh,  on_mm,  days,
-                        True, off_hh, off_mm, days,
-                    )
-
-            elif sub == "clear":
-                # Disable both flags; times and days unchanged
-                await led.set_schedule(
-                    False, cur_on_hh,  cur_on_mm,  cur_on_days,
-                    False, cur_off_hh, cur_off_mm, cur_off_days,
-                )
-                log.info("Schedules disabled.")
-
-            else:
-                print(f"Unrecognized schedule sub-command: {sub!r}")
-                print("Valid: on  off  both  clear")
+            except ValueError as e:
+                print(f"Error: {e}")
 
         else:
             print(f"Unrecognized command: {cmd_str}")
