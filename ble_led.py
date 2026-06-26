@@ -697,7 +697,7 @@ class LEDController:
 
         # Classic scenes
         log.info("  -> Classic scenes")
-        for name in ["Aurora", "Rainbow", "Flow", "Chase", "Alarm"]:
+        for name in ["Green-blue flowing water", "Seven-color drift", "Seven-color flowing water", "Seven-color chase", "Run with red dot on blue background"]:
             log.info(f"     {name}")
             await self.set_scene_by_name(name)
             await asyncio.sleep(3)
