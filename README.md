@@ -8,7 +8,7 @@ BLE library.
 
 - `ble_led.py` - main script: BLE protocol, controller class, CLI
 - `scenes.py` - catalog of 109 light scenes and 6 music (mic) scenes
-- `TG201A_protocol.md` - 
+- `TG201A_protocol.md` - The full BLE packet protocol
 
 ## Requirements
 

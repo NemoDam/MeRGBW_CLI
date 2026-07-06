@@ -25,6 +25,8 @@ Main CMD commands:
                        BRI  0-1000 uint16 big-endian
   0x08  MIC SENSITIVITY (payload: 0x3c-0x64 (60-100) - (0%-100%)
   0x0A  SCHEDULE      (8-byte payload, see cmd_set_schedule)
+  0x0C  SET TIME      (payload: YEAR_HI YEAR_LO MONTH DAY HOUR MIN SEC WEEKDAY)
+                       taken automatically from the PC clock, no arguments needed
   0x0E  HANDSHAKE     (fixed token, sent once at startup)
 
   <CHK> checksum:     sum (all packet bytes) = 0xFF
@@ -52,6 +54,7 @@ Main CMD commands:
 """
 
 import asyncio
+import datetime
 import logging
 from dataclasses import dataclass
 from typing import Optional
@@ -81,6 +84,7 @@ CMD_POWER = 0x01
 CMD_SET_COLOR = 0x03
 CMD_SET_BRIGHTNESS = 0x05
 CMD_SCHEDULE=0x0A
+CMD_SET_TIME = 0x0C
 CMD_BIND = 0x0E
 CMD_SET_SENS_MIC = 0x08
 CMD_SET_SCENE = 0x06
@@ -350,6 +354,34 @@ def cmd_set_schedule(
     return bytes(frame)
 
 
+def cmd_set_time() -> bytes:
+    # [0x HEAD CMD SEQ LEN PAYLOAD CHK]
+    # [0x 55 0C FF 0D YEAR_HI YEAR_LO MONTH DAY HOUR MIN SEC WEEKDAY CHK]
+    """
+    Set the device's date/time, read automatically from the PC clock
+    (no arguments: uses datetime.now()).
+
+    Real packet structure (from btsnoop, cmd 0x0C, 13 total bytes):
+      55 0C FF 0D [YEAR_HI][YEAR_LO][MONTH][DAY][HOUR][MIN][SEC][WEEKDAY] [CHK]
+
+      YEAR    : uint16 big-endian          (e.g. 2026 -> 0x07 0xEA)
+      MONTH   : 1-12
+      DAY     : 1-31
+      HOUR    : 0-23
+      MIN     : 0-59
+      SEC     : 0-59
+      WEEKDAY : ISO weekday, 1=Monday ... 7=Sunday
+    """
+    now = datetime.datetime.now()
+    year_hi = (now.year >> 8) & 0xFF
+    year_lo = now.year & 0xFF
+    frame = [
+        HEADER, CMD_SET_TIME, SEQ, 0x0D,
+        year_hi, year_lo, now.month, now.day,
+        now.hour, now.minute, now.second, now.isoweekday(),
+    ]
+    frame.append(checksum(frame))
+    return bytes(frame)
 
 
 
@@ -655,6 +687,20 @@ class LEDController:
         ))
         await asyncio.sleep(0.3)
 
+    async def set_time(self) -> None:
+        """
+        Sync the device's date/time with the PC's system clock.
+        No arguments: the time is read automatically via datetime.now().
+
+        Always called before any 'schedule' sub-command, so the weekly
+        on/off schedule is evaluated by the device against the correct
+        current day and time.
+        """
+        now = datetime.datetime.now()
+        log.info(f"Setting device time: {now:%Y-%m-%d %H:%M:%S} ({now:%A})")
+        await self._send(cmd_set_time())
+        await asyncio.sleep(0.2)
+
     # -- Color shortcuts ----------------------------------------------------------------
 
     async def red(self)     -> None: await self.set_color(255,   0,   0)
@@ -750,6 +796,7 @@ Basic commands:
   brightness <1-100>           Brightness in % (1=min 100=max)
   sens <0-100>                 Mic sensitivity in % (0=min 100=max)
   query                        Read current status
+  time                         Sync device date/time with the PC clock (no args)
 
 Scenes:
   scene <name> [speed]         Activate scene by name (speed 0-100, optional)
@@ -788,6 +835,9 @@ Schedule:
   schedule both <HH:MM> <HH:MM> <days>      Set power-on and power-off together
   schedule clear                            Disable both schedules
 
+  Note: every 'schedule' sub-command automatically syncs the device
+        time first (calls set_time() with no arguments).
+
   <days>: comma-separated list or "all"
           values: mon tue wed thu fri sat sun
           examples: all   mon,wed,fri   mon,tue,wed,thu,fri
@@ -823,9 +873,8 @@ async def main() -> None:
         if   cmd_str == "demo":       await led.demo()
         elif cmd_str == "on":         await led.power_on()
         elif cmd_str == "off":        await led.power_off()
-        elif cmd_str == "query":
-            await led.query()
-            await asyncio.sleep(0.6)
+        elif cmd_str == "query":      await led.query()
+        elif cmd_str == "time":	      await led.set_time()
         elif cmd_str == "red":        await led.red()
         elif cmd_str == "green":      await led.green()
         elif cmd_str == "blue":       await led.blue()
@@ -944,6 +993,9 @@ async def main() -> None:
                 return days_mask(*[g.strip() for g in s.split(",")])
 
             sub = sys.argv[2].lower() if len(sys.argv) > 2 else ""
+
+            # -- Sync device time (always done before any schedule sub-command) --
+            await led.set_time()
 
             # -- Read current state (needed for all sub-commands) -------------
             log.info("Reading current schedule state")
