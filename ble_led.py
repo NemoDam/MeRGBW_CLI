@@ -25,6 +25,7 @@ Main CMD commands:
                        BRI  0-1000 uint16 big-endian
   0x08  MIC SENSITIVITY (payload: 0x3c-0x64 (60-100) - (0%-100%)
   0x0A  SCHEDULE      (8-byte payload, see cmd_set_schedule)
+  0x0B  SET LED COUNT (payload: COUNT_HI COUNT_LO, uint16 big-endian)
   0x0C  SET TIME      (payload: YEAR_HI YEAR_LO MONTH DAY HOUR MIN SEC WEEKDAY)
                        taken automatically from the PC clock, no arguments needed
   0x0E  HANDSHAKE     (fixed token, sent once at startup)
@@ -90,6 +91,7 @@ CMD_SET_SENS_MIC = 0x08
 CMD_SET_SCENE = 0x06
 CMD_SET_SCENE_SPEED = 0x0F
 CMD_SET_SCENE_MIC = 0x07
+CMD_SET_LED_COUNT = 0x0B
 
 
 def checksum(frame: list[int]) -> int:
@@ -162,6 +164,26 @@ def cmd_set_sens_mic(value: int) -> bytes:
     value  = max(60, min(100,value))
     sens = value & 0xFF
     frame = [HEADER, CMD_SET_SENS_MIC, SEQ, 0x06, sens]
+    frame.append(checksum(frame))
+    return bytes(frame)
+
+def cmd_set_led_count(count: int) -> bytes:
+    # [0x HEAD CMD SEQ LEN PAYLOAD CHK]
+    # [0x 55 0B FF 07 HI LO CHK]
+    """
+    Set the number of LEDs in the strip.
+
+    Example (CMD 0x0B, 5 packets:
+      55 0B FF 07 00 28 71   -> 40 LEDs
+      55 0B FF 07 00 19 80   -> 25 LEDs
+      55 0B FF 07 00 3C 5D   -> 60 LEDs
+
+    payload = 2 bytes, uint16 big-endian.
+    """
+    count = max(1, min(1000, count))
+    hi    = (count >> 8) & 0xFF
+    lo    = count & 0xFF
+    frame = [HEADER, CMD_SET_LED_COUNT, SEQ, 0x07, hi, lo]
     frame.append(checksum(frame))
     return bytes(frame)
 
@@ -597,6 +619,17 @@ class LEDController:
         await self._send(cmd_set_sens_mic(val))
         await asyncio.sleep(0.2)
 
+    async def set_led_count(self, count: int) -> None:
+        """
+        Set the number of LEDs in the strip (1-1000).
+
+        Example:
+          await led.set_led_count(60)
+        """
+        log.info(f"LED count: {count}")
+        await self._send(cmd_set_led_count(count))
+        await asyncio.sleep(0.2)
+
     async def set_scene(self, scene_id: int, speed: int | None = None) -> None:
         """
         Activate a scene by numeric ID (0-255, see scenes.py for the catalog).
@@ -804,6 +837,7 @@ Usage:  python ble_led.py <command> [args]
   color_name                   Set color by name (red, green, blue, white, yellow, cyan, magenta, warm)
   brightness <1-100>           Brightness in % (1=min 100=max)
   sens <0-100>                 Mic sensitivity in % (0=min 100=max)
+  leds <count>                 Set number of LEDs in the strip (1-1000, e.g. leds 60)
   time                         Sync device date/time with the PC clock (no args)
   query                        Read current status
 
@@ -939,6 +973,16 @@ async def main() -> None:
                     print("Usage: sens <0-100>")
                 else:
                     await led.set_sens_mic(val)
+
+        elif cmd_str == "leds":
+            if len(sys.argv) < 3:
+                print("Usage: leds <count>  (e.g. leds 60)")
+            else:
+                val = int(sys.argv[2])
+                if not (1 <= val <= 1000):
+                    print("Usage: leds <count>  (1-1000)")
+                else:
+                    await led.set_led_count(val)
 
         elif cmd_str == "scene":
             if len(sys.argv) < 3:
