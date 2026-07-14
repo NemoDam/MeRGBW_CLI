@@ -579,6 +579,15 @@ class LEDController:
         await self._send(cmd_set_brightness(val))
         await asyncio.sleep(0.2)
 
+    async def set_speed(self, value: int) -> None:
+        """Set speed of the current scene
+        input  0 ... 100%
+        output 100 (min) ... 0 (max)."""
+        val=remap(value,0,100,0,100)
+        log.info(f"Speed: {val}={value}%")
+        await self._send(cmd_set_speed(val))
+        await asyncio.sleep(0.2)
+
     async def set_sens_mic(self, value: int) -> None:
         """Set microphone sensitivity:
         input  0 ... 100%
@@ -787,20 +796,22 @@ async def scan(timeout: float = 10.0) -> None:
 HELP = """
 Usage:  python ble_led.py <command> [args]
 
-Basic commands:
+\x1b[32mBasic commands\x1b[0m:
   scan                         Search for nearby BLE devices
   demo                         Full demo sequence
-  on                           Power on
-  off                          Power off
+  on / off                     Power on / off
   color <R> <G> <B>            Set RGB color 0-255  (e.g. color 255 0 0)
+  color_name                   Set color by name (red, green, blue, white, yellow, cyan, magenta, warm)
   brightness <1-100>           Brightness in % (1=min 100=max)
   sens <0-100>                 Mic sensitivity in % (0=min 100=max)
-  query                        Read current status
   time                         Sync device date/time with the PC clock (no args)
+  query                        Read current status
 
-Scenes:
+\x1b[32mLight Scenes (normal mode)\x1b[0m:
   scene <name> [speed]         Activate scene by name (speed 0-100, optional)
-  scene id <N> [speed]         Activate scene by numeric ID 0-255
+  scene id <N> [speed]         Activate scene by numeric ID 1-117, gap scene 76-83
+
+\x1b[32mScenes Info and Filtering\x1b[0m:
   scenes                       List all 109 scenes
   scenes <text>                Filter by name or ID  (e.g. scenes run | scenes 23)
 
@@ -808,13 +819,14 @@ Scenes:
   Accumulation, Chase, Drift, Spread, Opening and closing,
   Light-to-dark transition, Flowing water, Flow, Run, Run with dot...
 
-  Examples:
-    scene "Green-blue flowing water"
-    scene "Seven-color chase" 80
-    scene id 23 20
-    scenes run
-
-Music scenes (microphone mode):
+    \x1b[33mExamples:
+        scene "Green-blue flowing water"
+        scene "Seven-color chase" 80
+        scene id 23 20
+        scenes run
+        scenes 54\x1b[0m
+    
+\x1b[32mMusic scenes (microphone mode)\x1b[0m:
   music <name>                 Activate music scene by name
   music id <N>                 Activate music scene by numeric ID 1-6
   music                        List the 6 music scenes
@@ -822,12 +834,12 @@ Music scenes (microphone mode):
   Scenes: Spectrum1 (1)  Spectrum2 (2)  Spectrum3 (3)
           Flowing (4)    Rolling (5)   Rhythm (6)
 
-  Examples:
-    music Spectrum2
-    music id 4
-    music id 6
+    \x1b[33mExamples:
+        music Spectrum2
+        music id 4
+        music id 6\x1b[0m
 
-Schedule:
+\x1b[32mSchedule\x1b[0m:
   schedule on  <HH:MM> <days>               Enable power-on schedule
   schedule on  enable|disable               Enable/disable power-on (keeps saved time)
   schedule off <HH:MM> <days>               Enable power-off schedule
@@ -842,10 +854,18 @@ Schedule:
           values: mon tue wed thu fri sat sun
           examples: all   mon,wed,fri   mon,tue,wed,thu,fri
 
-Quick colors: red  green  blue  white  yellow  cyan  magenta  warm
-  Examples:
-    python ble_led.py red
-    python ble_led.py yellow
+    \x1b[33mExamples:
+        schedule on  19:00 all
+        schedule off 23:30 mon,tue,wed,thu,fri,sat,sun
+        schedule both 19:00 23:30 all
+        schedule clear\x1b[0m
+
+
+\x1b[32mQuick colors\x1b[0m: 
+red  green  blue  white  yellow  cyan  magenta  warm
+    \x1b[33mExamples:
+        python ble_led.py red
+        python ble_led.py yellow\x1b[0m
 """
 
 async def main() -> None:
@@ -899,6 +919,16 @@ async def main() -> None:
                     print("Usage: brightness <1-100>")
                 else:
                     await led.set_brightness(val)
+
+        elif cmd_str == "speed":
+            if len(sys.argv) < 3:
+                print("Usage: speed <0-100>")
+            else:
+                val = int(sys.argv[2])
+                if not ( 0 <= val <= 100 ):
+                    print("Usage: speed <0-100>")
+                else:
+                    await led.set_speed(val)
 
         elif cmd_str == "sens":
             if len(sys.argv) < 3:

@@ -44,17 +44,23 @@ python ble_led.py <command> [args]
 
 ### Basic commands
 
-| Command 							| Description 											|
-|-----------------------|-----------------------------------|
-| `scan` 								| Search for nearby BLE devices 		|
-| `demo` 								| Run a full demo sequence 					|
-| `on` / `off` 					| Power on / off 										|
-| `color <R> <G> <B>` 	| Set RGB color, 0-255 per channel 	|
-| `brightness <1-100>` 	| Set brightness in % 							|
-| `sens <0-100>` 				| Set microphone sensitivity in % 	|
-| `query` 							| Read and print the current status |
+| Command 				      | Description 											                      |
+|-----------------------|---------------------------------------------------------|
+| `scan` 				        | Search for nearby BLE devices 		                      |
+| `demo` 				        | Run a full demo sequence 					                      |
+| `on` / `off` 			    | Power on / off 										                      |
+| `color <R> <G> <B>` 	| Set RGB color, 0-255 per channel 	                      |
+| `color_name`          | Set quick color *                 	                    |
+| `brightness <1-100>` 	| Set brightness in % 							                      |
+| `scene id <1-117>`	  | Set scene by ID 							                          |
+| `music id <1-6>` 	    | Set music scene by ID 						                      |
+| `sens <0-100>` 		    | Set microphone sensitivity in % (only for music scenes) |
+| `schedule <..>` 		  | Configure scheduling (on/off time and days)             |
+| `speed <0-100>` 		  | Set scene speed in %							                      |
+| `time` 		            | Set the device's date/time				                      |
+| `query` 				      | Read and print the current status                       |
 
-Quick colors: `red`, `green`, `blue`, `white`, `yellow`, `cyan`, `magenta`, `warm`
+* Quick colors: `red`, `green`, `blue`, `white`, `yellow`, `cyan`, `magenta`, `warm`
 
 ### Example:
 
@@ -63,7 +69,7 @@ source .venv/bin/activate
 
 python ble_led.py on
 python ble_led.py off
-python ble_led.py color 255 0 0
+python ble_led.py color 255 20 55
 python ble_led.py green
 python ble_led.py red
 python ble_led.py brightness 70
@@ -72,9 +78,12 @@ python ble_led.py scene "chase" 80
 python ble_led.py scene id 23
 python ble_led.py scenes
 python ble_led.py scenes "run with dot"
+python ble_led.py music id 4
+python ble_led.py time
+python ble_led.py query
 ```
 
-### Light scenes
+### Light scenes (normal mode)
 
 ```bash
 python ble_led.py scene <name> [speed]
@@ -104,9 +113,9 @@ Main groups:
 | Alternating gradient    | 11-15    |
 | Accumulation            | 16-22    |
 | Chase				            | 23-25    |
-| Drift							      | 26-28    |
-| Spread						      | 29-31    |
-| Melody close     				| 32-34    |
+| Drift					          | 26-28    |
+| Spread				          | 29-31    |
+| Melody close     		    | 32-34    |
 | Opening and closing     | 35-44    |
 | transition              | 45-54    |
 | Flowing water           | 55-63    |
@@ -125,7 +134,7 @@ python ble_led.py music
 6 scenes available: `Spectrum1`, `Spectrum2`, `Spectrum3`, `Flowing`,
 `Rolling`, `Rhythm` (IDs 1-6). These do not use a speed parameter.
 
-### Microphone sensitivity mapping in remote control
+#### Microphone sensitivity mapping in remote control
 | Value  | Percentage |
 | ------ | ---------- |
 | `0x3C` | 0%         |

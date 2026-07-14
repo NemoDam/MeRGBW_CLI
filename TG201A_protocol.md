@@ -108,15 +108,15 @@ Weekday bitmask:
 | bit6 | Sunday    |  
 
 #### SET TIME (CMD `0X0C`) and payload:
-0x 55 0C FF 0D PAYLOAD CHK
-payload = [ YEAR_HI YEAR_LO MONTH DAY HOUR MIN SEC WEEKDAY ]
-YEAR    : uint16 big-endian          (e.g. 2026 -> 0x07 0xEA)
-MONTH   : 1-12
-DAY     : 1-31
-HOUR    : 0-23
-MIN     : 0-59
-SEC     : 0-59
-WEEKDAY : ISO weekday, 1=Monday ... 7=Sunday
+0x 55 0C FF 0D PAYLOAD CHK  
+payload = [ YEAR_HI YEAR_LO MONTH DAY HOUR MIN SEC WEEKDAY ]  
+YEAR    : uint16 big-endian          (e.g. 2026 -> 0x07 0xEA)  
+MONTH   : 1-12  
+DAY     : 1-31  
+HOUR    : 0-23  
+MIN     : 0-59  
+SEC     : 0-59  
+WEEKDAY : ISO weekday, 1=Monday ... 7=Sunday  
 
 #### HANDSHAKE (CMD `0x0E`) and payload:  
 0x 55 0E FF 0B PAYLOAD CHK  
