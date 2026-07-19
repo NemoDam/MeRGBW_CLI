@@ -55,17 +55,28 @@ Main CMD commands:
 """
 
 import asyncio
+import colorsys
 import datetime
 import logging
+import os
+import sys
+import argparse
 from dataclasses import dataclass
 from typing import Optional
 from bleak import BleakClient, BleakScanner
 
 # --- Configuration ----------------------------------------------------------------
 
-MAC_ADDRESS = "41:42:81:AB:60:BB"
+# Override with:  BLE_LED_MAC=AA:BB:CC:DD:EE:FF python ble_led.py ...
+MAC_ADDRESS = os.environ.get("BLE_LED_MAC", "41:42:81:AB:60:BB")
 UUID_WRITE  = "0000fff3-0000-1000-8000-00805f9b34fb"
 UUID_NOTIFY = "0000fff4-0000-1000-8000-00805f9b34fb"
+
+# Delays (seconds) after each write, needed by the device firmware to process
+# the command before the next one is sent.
+DELAY_SHORT  = 0.2   # simple commands (color, brightness, speed, sens, time)
+DELAY_MEDIUM = 0.3   # power, schedule, generic post-command pause
+DELAY_LONG   = 0.4   # query / handshake-adjacent commands
 
 logging.basicConfig(
     level=logging.INFO,
@@ -206,7 +217,6 @@ def cmd_set_color(r: int, g: int, b: int, brightness: int = 1000) -> bytes:
     Note: low-saturation colors (white, gray) are not represented
     well via HUE alone; use set_brightness() to adjust intensity.
     """
-    import colorsys
     r = max(0, min(255, r))
     g = max(0, min(255, g))
     b = max(0, min(255, b))
@@ -444,19 +454,13 @@ class DeviceState:
             f"  LED={self.n_led}  mic={self.mic_sens}"
         )
 
-
-def parse_notification(data: bytes) -> str:
-    """Decode the NOTIFY FFF4 response."""
-    if len(data) < 4 or data[0] != 0x56:
-        return f"[unrecognized raw] {data.hex().upper()}"
-
-    chk_ok = (sum(data) & 0xFF) == 0xFF
-    chk_tag = "" if chk_ok else " WARN CHK_ERR"
-
-    if len(data) == 19:
-        # FFF4 notification: data[7..10]=power-on, data[11..14]=power-off
-        # flag: 0x01=active  0x00=inactive
-        state = DeviceState(
+    @classmethod
+    def from_notify(cls, data: bytes) -> "DeviceState":
+        """
+        Build a DeviceState from a 19-byte FFF4 notification.
+        Caller is responsible for checking len(data) == 19 first.
+        """
+        return cls(
             power      = (data[4] == 0x01),
             brightness = (data[5] << 8) | data[6],
             on_sched   = (data[7]  == 0x01),
@@ -469,6 +473,18 @@ def parse_notification(data: bytes) -> str:
             mic_sens   = mic_raw_to_pct(data[17]),
             raw        = data,
         )
+
+
+def parse_notification(data: bytes) -> str:
+    """Decode the NOTIFY FFF4 response into a human-readable string."""
+    if len(data) < 4 or data[0] != 0x56:
+        return f"[unrecognized raw] {data.hex().upper()}"
+
+    chk_ok = (sum(data) & 0xFF) == 0xFF
+    chk_tag = "" if chk_ok else " WARN CHK_ERR"
+
+    if len(data) == 19:
+        state = DeviceState.from_notify(data)
         return f"STATUS{chk_tag}\n{state}"
 
     # short ACK (6 bytes)
@@ -529,10 +545,10 @@ class LEDController:
             return False
         log.info("Connected. Enabling notifications...")
         await self.client.start_notify(UUID_NOTIFY, self._on_notify)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(DELAY_MEDIUM)
         # mandatory handshake
         await self._send(cmd_handshake())
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(DELAY_LONG)
         return True
 
     async def disconnect(self) -> None:
@@ -552,21 +568,14 @@ class LEDController:
     def _on_notify(self, _handle, data: bytes) -> None:
         # Save the last full state (used by set_schedule to keep values)
         if len(data) == 19 and data[0] == 0x56:
-            self._last_state = DeviceState(
-                power      = (data[4] == 0x01),
-                brightness = (data[5] << 8) | data[6],
-                on_sched   = (data[7]  == 0x01),
-                on_time    = f"{data[8]:02d}:{data[9]:02d}",
-                on_days    = days_str(data[10]),
-                off_sched  = (data[11] == 0x01),
-                off_time   = f"{data[12]:02d}:{data[13]:02d}",
-                off_days   = days_str(data[14]),
-                n_led      = data[16],
-                mic_sens   = mic_raw_to_pct(data[17]),
-                raw        = data,
-            )
+            self._last_state = DeviceState.from_notify(data)
         msg = parse_notification(data)
         log.info(f"<- {msg}")
+
+    @property
+    def last_state(self) -> Optional[DeviceState]:
+        """Most recent DeviceState received via NOTIFY, or None if never queried."""
+        return self._last_state
 
     # -- Public API ------------------------------------------------------------------
 
@@ -574,23 +583,23 @@ class LEDController:
         """Read the current state from the device."""
         log.info("Requesting status...")
         await self._send(cmd_query_status())
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(DELAY_LONG)
 
     async def power_on(self) -> None:
         log.info("Powering on...")
         await self._send(cmd_power(True))
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(DELAY_MEDIUM)
 
     async def power_off(self) -> None:
         log.info("Powering off...")
         await self._send(cmd_power(False))
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(DELAY_MEDIUM)
 
     async def set_color(self, r: int, g: int, b: int) -> None:
         """Set RGB color via HUE+brightness (CMD 0x03)."""
         log.info(f"RGB color ({r},{g},{b}) #{r:02X}{g:02X}{b:02X}")
         await self._send(cmd_set_color(r, g, b))
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(DELAY_SHORT)
 
     async def set_brightness(self, value: int) -> None:
         """Set brightness
@@ -599,16 +608,14 @@ class LEDController:
         val=remap(value,1,100,50,1000)
         log.info(f"Brightness: {val}={value}%")
         await self._send(cmd_set_brightness(val))
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(DELAY_SHORT)
 
     async def set_speed(self, value: int) -> None:
-        """Set speed of the current scene
-        input  0 ... 100%
-        output 100 (min) ... 0 (max)."""
-        val=remap(value,0,100,0,100)
-        log.info(f"Speed: {val}={value}%")
-        await self._send(cmd_set_speed(val))
-        await asyncio.sleep(0.2)
+        """Set speed of the current scene (0-100%; the firmware inversion
+        happens inside cmd_set_speed())."""
+        log.info(f"Speed: {value}%")
+        await self._send(cmd_set_speed(value))
+        await asyncio.sleep(DELAY_SHORT)
 
     async def set_sens_mic(self, value: int) -> None:
         """Set microphone sensitivity:
@@ -617,7 +624,7 @@ class LEDController:
         val=remap(value,0,100,60,100)
         log.info(f"Mic sensitivity: {val}={value}%")
         await self._send(cmd_set_sens_mic(val))
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(DELAY_SHORT)
 
     async def set_led_count(self, count: int) -> None:
         """
@@ -628,7 +635,7 @@ class LEDController:
         """
         log.info(f"LED count: {count}")
         await self._send(cmd_set_led_count(count))
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(DELAY_SHORT)
 
     async def set_scene(self, scene_id: int, speed: int | None = None) -> None:
         """
@@ -646,7 +653,7 @@ class LEDController:
         await self._send(cmd_set_scene(scene_id))
         await asyncio.sleep(0.1)
         await self._send(cmd_set_speed(spd))
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(DELAY_SHORT)
 
     async def set_scene_by_name(self, name: str, speed: int | None = None) -> None:
         """
@@ -660,14 +667,14 @@ class LEDController:
         """
         scene = get_scene(name)
         if scene is None:
-            log.error(f"Scene not found: {name!r}. Use 'python ble_led.py scenes' for the list.")
+            log.error(f"Scene not found: {name!r}. Use 'python {PROG} scenes' for the list.")
             return
         spd = speed if speed is not None else scene.speed
         log.info(f"Scene '{scene.name}' (ID={scene.scene_id})  speed={spd}")
         await self._send(cmd_set_scene(scene.scene_id))
         await asyncio.sleep(0.1)
         await self._send(cmd_set_speed(spd))
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(DELAY_SHORT)
 
     async def set_music_scene(self, scene_id: int) -> None:
         """
@@ -682,7 +689,7 @@ class LEDController:
         name_label = known.name if known else f"ID={scene_id}"
         log.info(f"Music scene '{name_label}' (ID={scene_id})")
         await self._send(cmd_set_music_scene(scene_id))
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(DELAY_SHORT)
 
     async def set_music_scene_by_name(self, name: str) -> None:
         """
@@ -695,11 +702,11 @@ class LEDController:
         """
         scene = get_music_scene(name)
         if scene is None:
-            log.error(f"Music scene not found: {name!r}. Use 'python ble_led.py music' for the list.")
+            log.error(f"Music scene not found: {name!r}. Use 'python {PROG} music' for the list.")
             return
         log.info(f"Music scene '{scene.name}' (ID={scene.scene_id})")
         await self._send(cmd_set_music_scene(scene.scene_id))
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(DELAY_SHORT)
 
     async def set_schedule(
         self,
@@ -757,6 +764,7 @@ class LEDController:
     # -- Demo --------------------------------------------------------------------------
 
     async def demo(self) -> None:
+        """Run through power, colors, brightness, and a few scenes as a smoke test."""
         log.info("====== DEMO START ======")
 
         await self.query()
@@ -796,6 +804,18 @@ class LEDController:
         log.info("====== DEMO END ======")
 
 
+COLOR_SHORTCUTS = {
+    "red":     LEDController.red,
+    "green":   LEDController.green,
+    "blue":    LEDController.blue,
+    "white":   LEDController.white,
+    "yellow":  LEDController.yellow,
+    "cyan":    LEDController.cyan,
+    "magenta": LEDController.magenta,
+    "warm":    LEDController.warm,
+}
+
+
 # --- Scanning ------------------------------------------------------------------------
 
 async def scan(timeout: float = 10.0) -> None:
@@ -826,96 +846,302 @@ async def scan(timeout: float = 10.0) -> None:
 
 # --- Entry point ----------------------------------------------------------------------
 
-HELP = """
-Usage:  python ble_led.py <command> [args]
+PROG = os.path.basename(sys.argv[0]) or "ble_led.py"
 
-\x1b[32mBasic commands\x1b[0m:
-  scan                         Search for nearby BLE devices
-  demo                         Full demo sequence
-  on / off                     Power on / off
-  color <R> <G> <B>            Set RGB color 0-255  (e.g. color 255 0 0)
-  color_name                   Set color by name (red, green, blue, white, yellow, cyan, magenta, warm)
-  brightness <1-100>           Brightness in % (1=min 100=max)
-  sens <0-100>                 Mic sensitivity in % (0=min 100=max)
-  leds <count>                 Set number of LEDs in the strip (1-1000, e.g. leds 60)
-  time                         Sync device date/time with the PC clock (no args)
-  query                        Read current status
-
-\x1b[32mLight Scenes (normal mode)\x1b[0m:
-  scene <name> [speed]         Activate scene by name (speed 0-100, optional)
-  scene id <N> [speed]         Activate scene by numeric ID 1-117, gap scene 76-83
-
-\x1b[32mScenes Info and Filtering\x1b[0m:
-  scenes                       List all 109 scenes
-  scenes <text>                Filter by name or ID  (e.g. scenes run | scenes 23)
-
-  109 scenes: Cycle, Fantastic color, seven-color Energy/Jump/Flash/Gradient,
-  Accumulation, Chase, Drift, Spread, Opening and closing,
-  Light-to-dark transition, Flowing water, Flow, Run, Run with dot...
-
-    \x1b[33mExamples:
-        scene "Green-blue flowing water"
-        scene "Seven-color chase" 80
-        scene id 23 20
-        scenes run
-        scenes 54\x1b[0m
-    
-\x1b[32mMusic scenes (microphone mode)\x1b[0m:
-  music <name>                 Activate music scene by name
-  music id <N>                 Activate music scene by numeric ID 1-6
-  music                        List the 6 music scenes
-
-  Scenes: Spectrum1 (1)  Spectrum2 (2)  Spectrum3 (3)
-          Flowing (4)    Rolling (5)   Rhythm (6)
-
-    \x1b[33mExamples:
-        music Spectrum2
-        music id 4
-        music id 6\x1b[0m
-
-\x1b[32mSchedule\x1b[0m:
-  schedule on  <HH:MM> <days>               Enable power-on schedule
-  schedule on  enable|disable               Enable/disable power-on (keeps saved time)
-  schedule off <HH:MM> <days>               Enable power-off schedule
-  schedule off enable|disable               Enable/disable power-off (keeps saved time)
-  schedule both <HH:MM> <HH:MM> <days>      Set power-on and power-off together
-  schedule clear                            Disable both schedules
-
-  Note: every 'schedule' sub-command automatically syncs the device
-        time first (calls set_time() with no arguments).
-
-  <days>: comma-separated list or "all"
-          values: mon tue wed thu fri sat sun
-          examples: all   mon,wed,fri   mon,tue,wed,thu,fri
-
-    \x1b[33mExamples:
-        schedule on  19:00 all
-        schedule off 23:30 mon,tue,wed,thu,fri,sat,sun
-        schedule both 19:00 23:30 all
-        schedule clear\x1b[0m
-
-
-\x1b[32mQuick colors\x1b[0m: 
-red  green  blue  white  yellow  cyan  magenta  warm
-    \x1b[33mExamples:
-        python ble_led.py red
-        python ble_led.py yellow\x1b[0m
+EPILOG = f"""\
+\x1b[32mExamples\x1b[0m:\x1b[33m  
+  {PROG} scan
+  {PROG} on
+  {PROG} color 255 0 0
+  {PROG} color_name warm
+  {PROG} brightness 80
+  {PROG} scene "Seven-color chase" 80
+  {PROG} scene id 23 20
+  {PROG} scenes alternating
+  {PROG} music Spectrum2
+  {PROG} schedule on 19:00 all
+  {PROG} schedule off 23:30 mon,tue,wed,thu,fri
+  {PROG} schedule both 08:00 22:00 sat,sun
+  {PROG} schedule clear
+  {PROG} schedule -h
+  {PROG} scenes -h
+\x1b[0m
+109 classic scenes and 6 music scenes are cataloged in scenes.py.
+Run '\x1b[33m{PROG} scenes\x1b[0m' or '\x1b[33m{PROG} music\x1b[0m' to list them.
+Run '\x1b[33m{PROG} <command> -h\x1b[0m' for help on a specific command.
 """
 
+QUICK_COLOR_NAMES = tuple(sorted(COLOR_SHORTCUTS))
+
+
+def _ranged_int(lo: int, hi: int):
+    """argparse type factory: parses an int and enforces it is within [lo, hi]."""
+    def _parse(raw: str) -> int:
+        try:
+            val = int(raw)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{raw!r} is not an integer")
+        if not (lo <= val <= hi):
+            raise argparse.ArgumentTypeError(f"{val} is out of range [{lo}-{hi}]")
+        return val
+    return _parse
+
+
+def parse_time_arg(s: str) -> tuple[int, int]:
+    """'HH:MM' -> (hh, mm), with range check [00..23] and [00..59]."""
+    parts = s.split(":")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid time format {s!r}: expected HH:MM")
+    try:
+        hh, mm = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise ValueError(f"Invalid time {s!r}: hours and minutes must be integers")
+    if not (0 <= hh <= 23):
+        raise ValueError(f"Invalid hour {hh}: must be in range 0-23")
+    if not (0 <= mm <= 59):
+        raise ValueError(f"Invalid minute {mm}: must be in range 0-59")
+    return hh, mm
+
+
+def parse_days_arg(s: str) -> int:
+    """'mon,wed,fri' or 'all' -> bitmask (see days_mask())."""
+    return days_mask(*[g.strip() for g in s.split(",")])
+
+
+class _WideHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    def __init__(self, prog, indent_increment=2, max_help_position=32, width=None):
+        super().__init__(prog, indent_increment, max_help_position, width)
+
+    def add_argument(self, action):
+        super().add_argument(action)
+        if isinstance(action, argparse._SubParsersAction):
+            self._action_max_length += self._indent_increment
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=PROG,
+        description="Controller for the MeRGBW BLE LED strip.",
+        formatter_class=_WideHelpFormatter,
+        epilog=EPILOG,
+    )
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    sub.add_parser("scan", help="search for nearby BLE devices")
+    sub.add_parser("demo", help="run the full demo sequence")
+    sub.add_parser("on", help="power on")
+    sub.add_parser("off", help="power off")
+    sub.add_parser("query", help="read current status")
+    sub.add_parser("time", help="sync device date/time with the PC clock")
+
+    for name in QUICK_COLOR_NAMES:
+        sub.add_parser(name, help=f"quick color: {name}")
+
+    p_color = sub.add_parser("color", help="set RGB color (0-255 per channel)")
+    p_color.add_argument("r", type=_ranged_int(0, 255))
+    p_color.add_argument("g", type=_ranged_int(0, 255))
+    p_color.add_argument("b", type=_ranged_int(0, 255))
+
+    p_color_name = sub.add_parser("color_name", help="set color by name")
+    p_color_name.add_argument("name", choices=sorted(QUICK_COLOR_NAMES))
+
+    p_bri = sub.add_parser("brightness", help="brightness in %% (1-100)")
+    p_bri.add_argument("value", type=_ranged_int(1, 100))
+
+    p_speed = sub.add_parser("speed", help="effect speed in %% (0-100)")
+    p_speed.add_argument("value", type=_ranged_int(0, 100))
+
+    p_sens = sub.add_parser("sens", help="mic sensitivity in %% (0-100)")
+    p_sens.add_argument("value", type=_ranged_int(0, 100))
+
+    p_leds = sub.add_parser("leds", help="set number of LEDs in the strip (1-1000)")
+    p_leds.add_argument("count", type=_ranged_int(1, 1000))
+
+    p_scene = sub.add_parser(
+        "scene", help="activate a scene: by name, or 'id <N>' (both take an optional trailing speed 0-100)"
+    )
+    p_scene.add_argument("target", nargs="+", metavar="NAME|id N", help="scene name, or 'id' followed by a numeric ID")
+
+    p_scenes = sub.add_parser("scenes", help="list/filter the 109 classic scenes")
+    p_scenes.add_argument("query", nargs="?", help="filter by (partial) name or numeric ID")
+
+    p_music = sub.add_parser("music", help="activate a music scene by name or 'id <N>'; no args lists all 6")
+    p_music.add_argument("target", nargs="*", metavar="NAME|id N")
+
+    p_sched = sub.add_parser("schedule", help="manage the weekly power-on/power-off schedule")
+    sched_sub = p_sched.add_subparsers(dest="schedule_mode", metavar="<on|off|both|clear>")
+
+    p_sched_on = sched_sub.add_parser("on", help="set/enable the power-on schedule")
+    p_sched_on.add_argument("time_or_flag", metavar="HH:MM|enable|disable")
+    p_sched_on.add_argument("days", nargs="?", help="comma list (mon,tue,...) or 'all'")
+
+    p_sched_off = sched_sub.add_parser("off", help="set/enable the power-off schedule")
+    p_sched_off.add_argument("time_or_flag", metavar="HH:MM|enable|disable")
+    p_sched_off.add_argument("days", nargs="?", help="comma list (mon,tue,...) or 'all'")
+
+    p_sched_both = sched_sub.add_parser("both", help="set power-on and power-off together")
+    p_sched_both.add_argument("on_time", metavar="ON_HH:MM")
+    p_sched_both.add_argument("off_time", metavar="OFF_HH:MM")
+    p_sched_both.add_argument("days", help="comma list (mon,tue,...) or 'all'")
+
+    sched_sub.add_parser("clear", help="disable both schedules")
+
+    return parser
+
+
+async def _handle_scene(led: "LEDController", target: list[str]) -> None:
+    if target[0].lower() == "id":
+        if len(target) < 2:
+            print("Usage: scene id <N> [speed 0-100]")
+            return
+        sid = int(target[1])
+        speed = int(target[2]) if len(target) >= 3 else None
+        if speed is not None and not (0 <= speed <= 100):
+            print("Usage: scene id <N> [speed 0-100]")
+            return
+        await led.set_scene(sid, speed)
+        return
+
+    # Name with optional trailing speed (name itself can be multi-word, e.g. "Space Time")
+    args_rest = list(target)
+    speed = None
+    if args_rest and args_rest[-1].isdigit():
+        speed = int(args_rest[-1])
+        args_rest = args_rest[:-1]
+    name = " ".join(args_rest)
+    if speed is not None and not (0 <= speed <= 100):
+        print("Usage: scene <name> [speed 0-100]")
+        return
+    await led.set_scene_by_name(name, speed)
+
+
+def _print_scenes(query: Optional[str]) -> None:
+    query = query.lower() if query else None
+    matches = [
+        s for s in ALL_SCENES
+        if query is None or query in s.name.lower() or query == str(s.scene_id)
+    ]
+    print(f"\n  {'ID':>4}  {'Speed':>5}  Name")
+    print(f"  {'-'*4}  {'-'*5}  {'-'*40}")
+    for s in matches:
+        print(f"  {s.scene_id:>4}  {s.speed:>5}  {s.name}")
+    suffix = f"  (filter: {query!r})" if query else ""
+    print(f"\n  {len(matches)} scenes{suffix}  |  Total: {len(ALL_SCENES)}")
+
+
+async def _handle_music(led: "LEDController", target: list[str]) -> None:
+    if not target:
+        print(f"\n  {'ID':>4}  Name")
+        print(f"  {'-'*4}  {'-'*20}")
+        for s in ALL_MUSIC_SCENES:
+            print(f"  {s.scene_id:>4}  {s.name}")
+        print(f"\n  {len(ALL_MUSIC_SCENES)} music scenes  |  CMD 0x07 (SET_SCENE_MIC)")
+        return
+
+    if target[0].lower() == "id":
+        if len(target) < 2:
+            print("Usage: music id <N>")
+            return
+        await led.set_music_scene(int(target[1]))
+        return
+
+    await led.set_music_scene_by_name(target[0])
+
+
+async def _handle_schedule(led: "LEDController", args: argparse.Namespace) -> None:
+    mode = args.schedule_mode
+    if mode is None:
+        print("Usage: schedule <on|off|both|clear> ...")
+        print(f"Run '{PROG} schedule -h' for details.")
+        return
+
+    # Sync device time first, so the weekly schedule is evaluated against
+    # the correct current day/time.
+    await led.set_time()
+
+    log.info("Reading current schedule state")
+    await led.query()
+    await asyncio.sleep(0.6)
+    state = led.last_state
+
+    # Fallback values if the device does not respond
+    if state:
+        cur_on_active          = state.on_sched
+        cur_on_hh, cur_on_mm   = map(int, state.on_time.split(":"))
+        cur_off_active         = state.off_sched
+        cur_off_hh, cur_off_mm = map(int, state.off_time.split(":"))
+    else:
+        cur_on_active  = False
+        cur_on_hh, cur_on_mm   = 0, 0
+        cur_off_active = False
+        cur_off_hh, cur_off_mm = 0, 0
+
+    # Days are not exposed by the state notification; always use 0x7F (all).
+    cur_on_days  = 0x7F
+    cur_off_days = 0x7F
+
+    if mode == "on":
+        flag = args.time_or_flag.lower()
+        if flag in ("enable", "disable"):
+            await led.set_schedule(
+                (flag == "enable"), cur_on_hh,  cur_on_mm,  cur_on_days,
+                cur_off_active,     cur_off_hh, cur_off_mm, cur_off_days,
+            )
+        elif args.days is None:
+            print("Usage: schedule on <HH:MM> <days>")
+            print("   or: schedule on enable|disable")
+        else:
+            on_hh, on_mm = parse_time_arg(args.time_or_flag)
+            on_days = parse_days_arg(args.days)
+            await led.set_schedule(
+                True,           on_hh,      on_mm,      on_days,
+                cur_off_active, cur_off_hh, cur_off_mm, cur_off_days,
+            )
+
+    elif mode == "off":
+        flag = args.time_or_flag.lower()
+        if flag in ("enable", "disable"):
+            await led.set_schedule(
+                cur_on_active, cur_on_hh, cur_on_mm, cur_on_days,
+                (flag == "enable"), cur_off_hh, cur_off_mm, cur_off_days,
+            )
+        elif args.days is None:
+            print("Usage: schedule off <HH:MM> <days>")
+            print("   or: schedule off enable|disable")
+        else:
+            off_hh, off_mm = parse_time_arg(args.time_or_flag)
+            off_days = parse_days_arg(args.days)
+            await led.set_schedule(
+                cur_on_active, cur_on_hh, cur_on_mm, cur_on_days,
+                True,          off_hh,    off_mm,    off_days,
+            )
+
+    elif mode == "both":
+        on_hh,  on_mm  = parse_time_arg(args.on_time)
+        off_hh, off_mm = parse_time_arg(args.off_time)
+        days           = parse_days_arg(args.days)
+        await led.set_schedule(
+            True, on_hh,  on_mm,  days,
+            True, off_hh, off_mm, days,
+        )
+
+    elif mode == "clear":
+        await led.set_schedule(
+            False, cur_on_hh,  cur_on_mm,  cur_on_days,
+            False, cur_off_hh, cur_off_mm, cur_off_days,
+        )
+        log.info("Schedules disabled.")
+
+
 async def main() -> None:
-    import sys
+    parser = build_parser()
+    args = parser.parse_args()
 
-    if len(sys.argv) < 2:
-        print(HELP)
+    if args.command is None:
+        parser.print_help()
         return
 
-    cmd_str = sys.argv[1].lower()
-
-    if cmd_str in ("h", "help"):
-        print(HELP)
-        return
-
-    if cmd_str == "scan":
+    if args.command == "scan":
         await scan()
         return
 
@@ -924,253 +1150,44 @@ async def main() -> None:
         if not await led.connect():
             return
 
-        if   cmd_str == "demo":       await led.demo()
-        elif cmd_str == "on":         await led.power_on()
-        elif cmd_str == "off":        await led.power_off()
-        elif cmd_str == "query":      await led.query()
-        elif cmd_str == "time":	      await led.set_time()
-        elif cmd_str == "red":        await led.red()
-        elif cmd_str == "green":      await led.green()
-        elif cmd_str == "blue":       await led.blue()
-        elif cmd_str == "white":      await led.white()
-        elif cmd_str == "yellow":     await led.yellow()
-        elif cmd_str == "cyan":       await led.cyan()
-        elif cmd_str == "magenta":    await led.magenta()
-        elif cmd_str == "warm":       await led.warm()
-
-        elif cmd_str == "color":
-            if len(sys.argv) < 5:
-                print("Usage: color <R> <G> <B>")
-            else:
-                await led.set_color(int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]))
-
-        elif cmd_str == "brightness":
-            if len(sys.argv) < 3:
-                print("Usage: brightness <1-100>")
-            else:
-                val = int(sys.argv[2])
-                if not ( 1 <= val <= 100 ):
-                    print("Usage: brightness <1-100>")
-                else:
-                    await led.set_brightness(val)
-
-        elif cmd_str == "speed":
-            if len(sys.argv) < 3:
-                print("Usage: speed <0-100>")
-            else:
-                val = int(sys.argv[2])
-                if not ( 0 <= val <= 100 ):
-                    print("Usage: speed <0-100>")
-                else:
-                    await led.set_speed(val)
-
-        elif cmd_str == "sens":
-            if len(sys.argv) < 3:
-                print("Usage: sens <0-100>")
-            else:
-                val = int(sys.argv[2])
-                if not ( 0 <= val <= 100 ):
-                    print("Usage: sens <0-100>")
-                else:
-                    await led.set_sens_mic(val)
-
-        elif cmd_str == "leds":
-            if len(sys.argv) < 3:
-                print("Usage: leds <count>  (e.g. leds 60)")
-            else:
-                val = int(sys.argv[2])
-                if not (1 <= val <= 1000):
-                    print("Usage: leds <count>  (1-1000)")
-                else:
-                    await led.set_led_count(val)
-
-        elif cmd_str == "scene":
-            if len(sys.argv) < 3:
-                print("Usage: scene <name> [speed]  or  scene id <N> [speed]")
-            elif sys.argv[2].lower() == "id":
-                if len(sys.argv) < 4:
-                    print("Usage: scene id <N> [speed]")
-                else:
-                    sid   = int(sys.argv[3])
-                    speed = int(sys.argv[4]) if len(sys.argv) >= 5 else None
-                    if speed is not None and not (0 <= speed <= 100):
-                        print("Usage: scene id <N> [speed 0-100]")
-                    else:
-                        await led.set_scene(sid, speed)
-            else:
-                # name with optional speed (can be multi-word: "Space Time")
-                # Strategy: try the full name first, then drop the last token if it's a number
-                args_rest = sys.argv[2:]
-                speed = None
-                if args_rest and args_rest[-1].isdigit():
-                    speed = int(args_rest[-1])
-                    args_rest = args_rest[:-1]
-                name = " ".join(args_rest)
-                if speed is not None and not (0 <= speed <= 100):
-                    print("Usage: scene <name> [speed 0-100]")
-                else:
-                    await led.set_scene_by_name(name, speed)
-
-        elif cmd_str == "scenes":
-            query = sys.argv[2].lower() if len(sys.argv) > 2 else None
-            matches = [
-                s for s in ALL_SCENES
-                if query is None or query in s.name.lower() or query == str(s.scene_id)
-            ]
-            print(f"\n  {'ID':>4}  {'Speed':>5}  Name")
-            print(f"  {'-'*4}  {'-'*5}  {'-'*40}")
-            for s in matches:
-                print(f"  {s.scene_id:>4}  {s.speed:>5}  {s.name}")
-            suffix = f"  (filter: {query!r})" if query else ""
-            print(f"\n  {len(matches)} scenes{suffix}  |  Total: {len(ALL_SCENES)}")
-
-        elif cmd_str == "music":
-            # music                    -> list music scenes
-            # music id <N>             -> by ID
-            # music <name>             -> by name
-            if len(sys.argv) < 3:
-                # List music scenes
-                print(f"\n  {'ID':>4}  Name")
-                print(f"  {'-'*4}  {'-'*20}")
-                for s in ALL_MUSIC_SCENES:
-                    print(f"  {s.scene_id:>4}  {s.name}")
-                print(f"\n  {len(ALL_MUSIC_SCENES)} music scenes  |  CMD 0x07 (SET_SCENE_MIC)")
-            elif sys.argv[2].lower() == "id":
-                if len(sys.argv) < 4:
-                    print("Usage: music id <N>")
-                else:
-                    sid = int(sys.argv[3])
-                    await led.set_music_scene(sid)
-            else:
-                name = sys.argv[2]
-                await led.set_music_scene_by_name(name)
-
-        elif cmd_str == "schedule":
-            # -- Parsing helpers ---------------------------------------------
-            def parse_time(s: str):
-                """'HH:MM' -> (hh, mm)  with range check [00..23] and [00..59]."""
-                parts = s.split(":")
-                if len(parts) != 2:
-                    raise ValueError(f"Invalid time format {s!r}: expected HH:MM")
-                try:
-                    hh, mm = int(parts[0]), int(parts[1])
-                except ValueError:
-                    raise ValueError(f"Invalid time {s!r}: hours and minutes must be integers")
-                if not (0 <= hh <= 23):
-                    raise ValueError(f"Invalid hour {hh}: must be in range 0-23")
-                if not (0 <= mm <= 59):
-                    raise ValueError(f"Invalid minute {mm}: must be in range 0-59")
-                return hh, mm
-
-            def parse_days(s: str) -> int:
-                """'mon,wed,fri' or 'all' -> bitmask"""
-                return days_mask(*[g.strip() for g in s.split(",")])
-
-            sub = sys.argv[2].lower() if len(sys.argv) > 2 else ""
-
-            # -- Sync device time (always done before any schedule sub-command) --
-            await led.set_time()
-
-            # -- Read current state (needed for all sub-commands) -------------
-            log.info("Reading current schedule state")
+        cmd = args.command
+        if cmd == "demo":
+            await led.demo()
+        elif cmd == "on":
+            await led.power_on()
+        elif cmd == "off":
+            await led.power_off()
+        elif cmd == "query":
             await led.query()
-            await asyncio.sleep(0.6)
-            state = led._last_state
+        elif cmd == "time":
+            await led.set_time()
+        elif cmd in COLOR_SHORTCUTS:
+            await COLOR_SHORTCUTS[cmd](led)
+        elif cmd == "color":
+            await led.set_color(args.r, args.g, args.b)
+        elif cmd == "color_name":
+            await COLOR_SHORTCUTS[args.name](led)
+        elif cmd == "brightness":
+            await led.set_brightness(args.value)
+        elif cmd == "speed":
+            await led.set_speed(args.value)
+        elif cmd == "sens":
+            await led.set_sens_mic(args.value)
+        elif cmd == "leds":
+            await led.set_led_count(args.count)
+        elif cmd == "scene":
+            await _handle_scene(led, args.target)
+        elif cmd == "scenes":
+            _print_scenes(args.query)
+        elif cmd == "music":
+            await _handle_music(led, args.target)
+        elif cmd == "schedule":
+            await _handle_schedule(led, args)
 
-            # Fallback values if the device does not respond
-            if state:
-                cur_on_active      = state.on_sched
-                cur_on_hh, cur_on_mm   = map(int, state.on_time.split(":"))
-                cur_off_active     = state.off_sched
-                cur_off_hh, cur_off_mm = map(int, state.off_time.split(":"))
-            else:
-                cur_on_active  = False
-                cur_on_hh, cur_on_mm   = 0, 0
-                cur_off_active = False
-                cur_off_hh, cur_off_mm = 0, 0
+        await asyncio.sleep(DELAY_MEDIUM)
 
-            # days: not exposed by the state, always use 0x7F (all)
-            cur_on_days  = 0x7F
-            cur_off_days = 0x7F
-
-            try:
-                if sub == "on":
-                    third = sys.argv[3].lower() if len(sys.argv) > 3 else ""
-                    if third in ("enable", "disable"):
-                        # Change only the flag; on time and days unchanged
-                        await led.set_schedule(
-                            (third == "enable"), cur_on_hh,  cur_on_mm,  cur_on_days,
-                            cur_off_active,      cur_off_hh, cur_off_mm, cur_off_days,
-                        )
-                    elif len(sys.argv) < 5:
-                        print("Usage: schedule on <HH:MM> <days>")
-                        print("     e.g.: schedule on 19:00 all")
-                        print("     or: schedule on enable|disable")
-                    else:
-                        # New power-on time, enable; off side unchanged
-                        on_hh, on_mm = parse_time(sys.argv[3])
-                        on_days      = parse_days(sys.argv[4])
-                        await led.set_schedule(
-                            True,          on_hh,       on_mm,       on_days,
-                            cur_off_active, cur_off_hh, cur_off_mm, cur_off_days,
-                        )
-
-                elif sub == "off":
-                    third = sys.argv[3].lower() if len(sys.argv) > 3 else ""
-                    if third in ("enable", "disable"):
-                        # Change only the flag; off time and days unchanged
-                        await led.set_schedule(
-                            cur_on_active,      cur_on_hh,  cur_on_mm,  cur_on_days,
-                            (third == "enable"), cur_off_hh, cur_off_mm, cur_off_days,
-                        )
-                    elif len(sys.argv) < 5:
-                        print("Usage: schedule off <HH:MM> <days>")
-                        print("     e.g.: schedule off 23:30 mon,tue,wed,thu,fri")
-                        print("     or: schedule off enable|disable")
-                    else:
-                        # New power-off time, enable; on side unchanged
-                        off_hh, off_mm = parse_time(sys.argv[3])
-                        off_days       = parse_days(sys.argv[4])
-                        await led.set_schedule(
-                            cur_on_active, cur_on_hh, cur_on_mm, cur_on_days,
-                            True,          off_hh,    off_mm,    off_days,
-                        )
-
-                elif sub == "both":
-                    # schedule both HH:MM HH:MM days  -> set both and enable
-                    if len(sys.argv) < 6:
-                        print("Usage: schedule both <ON_HH:MM> <OFF_HH:MM> <days>")
-                        print("     e.g.: schedule both 08:00 22:00 sat,sun")
-                    else:
-                        on_hh,  on_mm  = parse_time(sys.argv[3])
-                        off_hh, off_mm = parse_time(sys.argv[4])
-                        days           = parse_days(sys.argv[5])
-                        await led.set_schedule(
-                            True, on_hh,  on_mm,  days,
-                            True, off_hh, off_mm, days,
-                        )
-
-                elif sub == "clear":
-                    # Disable both flags; times and days unchanged
-                    await led.set_schedule(
-                        False, cur_on_hh,  cur_on_mm,  cur_on_days,
-                        False, cur_off_hh, cur_off_mm, cur_off_days,
-                    )
-                    log.info("Schedules disabled.")
-
-                else:
-                    print(f"Unrecognized schedule sub-command: {sub!r}")
-                    print("Valid: on  off  both  clear")
-
-            except ValueError as e:
-                print(f"Error: {e}")
-
-        else:
-            print(f"Unrecognized command: {cmd_str}")
-            print(HELP)
-
-        await asyncio.sleep(0.3)
-
+    except ValueError as e:
+        print(f"Invalid argument: {e}")
     except Exception as e:
         log.error(f"Error: {e}")
         raise
